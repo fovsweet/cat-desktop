@@ -40,11 +40,11 @@ public enum DemoDirector {
             }
         }
 
-        // 1. 视线:看左上 → 看右下
-        at(0.6) { engine.handleMouseMoved(toScreenPoint: CGPoint(x: center.x - 350, y: center.y + 260)) }
-        capture("1_gaze_leftup", after: 1.2)
-        at(1.8) { engine.handleMouseMoved(toScreenPoint: CGPoint(x: center.x + 350, y: center.y - 200)) }
-        capture("2_gaze_rightdown", after: 2.4)
+        // 1. 转头:看左上 → 看右下(距离保持在跟随触发范围内)
+        at(0.6) { engine.handleMouseMoved(toScreenPoint: CGPoint(x: center.x - 250, y: center.y + 150)) }
+        capture("1_head_leftup", after: 1.2)
+        at(1.8) { engine.handleMouseMoved(toScreenPoint: CGPoint(x: center.x + 250, y: center.y - 130)) }
+        capture("2_head_rightdown", after: 2.4)
 
         // 2. 单击 → 伸爪(目标:视图内左下方)
         at(3.2) {
@@ -77,6 +77,13 @@ public enum DemoDirector {
         }
         capture("7_pounce_landed", after: 11.2, widenLeft: 340)
 
-        at(12.2) { print("DEMO DONE") }
+        // 6. 鼠标放远处 → 走过去(步行循环动画 + 窗口移动)
+        at(12.2) {
+            engine.handleMouseMoved(toScreenPoint: CGPoint(x: center.x - 600, y: center.y))
+        }
+        capture("8_walking", after: 13.4, widenLeft: 640)
+        capture("9_walk_done", after: 16.5, widenLeft: 640)
+
+        at(17.5) { print("DEMO DONE") }
     }
 }

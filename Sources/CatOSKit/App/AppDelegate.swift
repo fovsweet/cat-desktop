@@ -13,6 +13,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        terminateOtherInstances()
         statusBar = StatusBarController(
             onShowPet: { [weak self] in
                 self?.petController?.window?.orderFrontRegardless()
@@ -71,6 +72,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onPetting = { [weak engine] in engine?.petting() }
         controller.onChangePet = { [weak self] in self?.showOnboarding() }
         controller.onQuit = { NSApp.terminate(nil) }
+        controller.onWalkArrived = { [weak engine] in engine?.walkArrived() }
 
         controller.window?.orderFrontRegardless()
 
@@ -95,6 +97,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         engine = nil
         petController?.close()
         petController = nil
+    }
+
+    /// 防止多个实例同时跑出两只重叠的宠物:新实例启动时结束旧实例。
+    private func terminateOtherInstances() {
+        let currentPID = NSRunningApplication.current.processIdentifier
+        for app in NSWorkspace.shared.runningApplications
+        where app.processIdentifier != currentPID
+            && (app.bundleIdentifier == "com.fov.catos" || app.localizedName == "CatOS") {
+            app.forceTerminate()
+        }
     }
 
     private func presentError(_ error: Error) {

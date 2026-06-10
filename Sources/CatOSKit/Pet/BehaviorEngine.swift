@@ -30,12 +30,15 @@ public protocol PetActing: AnyObject {
     func performEat(_ food: FoodKind)
     func performLove()
     func setSleeping(_ sleeping: Bool)
+    func startWalk(towardScreenPoint point: CGPoint)
+    func updateWalkTarget(_ point: CGPoint)
+    func stopWalk()
 }
 
 /// 行为状态机:驱动视线跟随、点击互动、投喂/抚摸、打盹。
 public final class BehaviorEngine {
     public enum State: Equatable {
-        case idle, watching, pawing, pouncing, eating, loved, sleeping
+        case idle, watching, walking, pawing, pouncing, eating, loved, sleeping
     }
 
     public struct Tuning {
@@ -46,6 +49,10 @@ public final class BehaviorEngine {
         public var pounceDuration: TimeInterval = 1.2
         public var eatDuration: TimeInterval = 2.6
         public var loveDuration: TimeInterval = 1.6
+        /// 鼠标离宠物超过这个距离就起身走过去。
+        public var followTriggerDistance: CGFloat = 340
+        /// 走到离鼠标这么近就停下注视。
+        public var followStopDistance: CGFloat = 170
         public init() {}
     }
 
@@ -74,16 +81,46 @@ public final class BehaviorEngine {
 
     public func handleMouseMoved(toScreenPoint point: CGPoint) {
         if state == .sleeping {
-            let frame = petFrameProvider()
-            let center = CGPoint(x: frame.midX, y: frame.midY)
-            if hypot(point.x - center.x, point.y - center.y) < tuning.wakeDistance {
+            if distanceToPet(point) < tuning.wakeDistance {
                 wake()
             }
             return
         }
+
+        if state == .walking {
+            touch()
+            if distanceToPet(point) < tuning.followStopDistance {
+                actor?.stopWalk()
+                state = .watching
+            } else {
+                actor?.updateWalkTarget(point)
+            }
+            actor?.updateGaze(towardScreenPoint: point)
+            return
+        }
+
         guard state == .idle || state == .watching else { return }
-        state = .watching
+        touch()
+        if distanceToPet(point) > tuning.followTriggerDistance {
+            state = .walking
+            actor?.startWalk(towardScreenPoint: point)
+        } else {
+            state = .watching
+        }
         actor?.updateGaze(towardScreenPoint: point)
+    }
+
+    /// 窗口移动器到达目标后回调:停下来看着鼠标。
+    public func walkArrived() {
+        guard state == .walking else { return }
+        actor?.stopWalk()
+        state = .watching
+        touch()
+    }
+
+    private func distanceToPet(_ point: CGPoint) -> CGFloat {
+        let frame = petFrameProvider()
+        return hypot(point.x - frame.midX, point.y - frame.midY)
     }
 
     /// 周期心跳(随鼠标轮询触发):处理入睡与眨眼。
@@ -110,6 +147,10 @@ public final class BehaviorEngine {
         if state == .sleeping {
             wake()
             return
+        }
+        if state == .walking {
+            actor?.stopWalk()
+            state = .watching
         }
         guard state == .idle || state == .watching || state == .pawing else { return }
 
@@ -150,6 +191,10 @@ public final class BehaviorEngine {
 
     private func interruptibleForMenuAction() -> Bool {
         if state == .sleeping { wake() }
+        if state == .walking {
+            actor?.stopWalk()
+            state = .watching
+        }
         return state == .idle || state == .watching
     }
 

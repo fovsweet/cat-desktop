@@ -9,6 +9,9 @@ if arguments.count >= 4, arguments[1] == "--selftest" {
         seed: arguments.contains("--seed")
     ))
 }
+if arguments.count >= 3, arguments[1] == "--poses" {
+    exit(SelfTest.renderPoses(outputPath: arguments[2]))
+}
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

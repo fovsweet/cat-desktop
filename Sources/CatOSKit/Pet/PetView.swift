@@ -1,21 +1,23 @@
 import AppKit
 import QuartzCore
 
-/// 桌宠视图:2.5D 木偶 —— 身体(抠图)+ 眼睛 + 爪子 + 食物/爱心/Zzz 图层。
+/// 桌宠视图:2.5D 木偶 —— 身体(抠图)+ 可转动的头部图层 + 爪子 + 食物/爱心/Zzz。
+/// 头部从抠图中以双眼为中心羽化裁出,绕颈部支点转向鼠标方向。
 public final class PetView: NSView {
     public var onClick: ((_ viewPoint: CGPoint, _ screenPoint: CGPoint) -> Void)?
     public var contextMenuProvider: (() -> NSMenu)?
 
     private let container = CALayer()
     private let body = CALayer()
-    private let leftEye: EyeLayer
-    private let rightEye: EyeLayer
+    private let head = CALayer()
     private let paw: PawLayer
     private let hearts = PetLayerFactory.makeHeartEmitter()
     private let zzz = PetLayerFactory.makeEmojiLayer("💤", fontSize: 22)
     private var foodLayer: CATextLayer?
 
     private let petRect: CGRect
+    private var headCenterInView: CGPoint
+    private var isSleeping = false
     /// 爪子伸出可超出宠物本体,四周留白。
     private static let padding: CGFloat = 70
 
@@ -34,12 +36,9 @@ public final class PetView: NSView {
         let viewSize = CGSize(width: petSize.width + Self.padding * 2,
                               height: petSize.height + Self.padding + 12)
 
-        let eyeRadius = min(max(petSize.width * 0.055, 7), 18)
-        leftEye = EyeLayer(radius: eyeRadius)
-        rightEye = EyeLayer(radius: eyeRadius)
-
         let furColor = cgImage.map(ImageUtil.averageFurColor) ?? .systemGray
         paw = PawLayer(furColor: furColor)
+        headCenterInView = CGPoint(x: petRect.midX, y: petRect.maxY * 0.8)
 
         super.init(frame: CGRect(origin: .zero, size: viewSize))
         wantsLayer = true
@@ -58,10 +57,7 @@ public final class PetView: NSView {
         body.shadowRadius = 6
         container.addSublayer(body)
 
-        leftEye.position = eyePosition(profile.leftEye)
-        rightEye.position = eyePosition(profile.rightEye)
-        container.addSublayer(leftEye)
-        container.addSublayer(rightEye)
+        setupHead(profile: profile, cgImage: cgImage)
 
         paw.position = CGPoint(x: petRect.midX, y: petRect.minY + petRect.height * 0.28)
         container.addSublayer(paw)
@@ -79,9 +75,39 @@ public final class PetView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    private func eyePosition(_ normalized: CGPoint) -> CGPoint {
-        let p = PetGeometry.denormalize(normalized, in: petRect.size)
-        return CGPoint(x: petRect.minX + p.x, y: petRect.minY + p.y)
+    /// 以双眼中点为头部中心,羽化裁出头部并叠在身体上方。
+    private func setupHead(profile: PetProfile, cgImage: CGImage?) {
+        guard let cgImage else { return }
+        let eyeMid = CGPoint(
+            x: (profile.leftEye.x + profile.rightEye.x) / 2,
+            y: (profile.leftEye.y + profile.rightEye.y) / 2
+        )
+        let eyeDistance = hypot(
+            profile.leftEye.x - profile.rightEye.x,
+            (profile.leftEye.y - profile.rightEye.y)
+                * (CGFloat(cgImage.height) / CGFloat(cgImage.width))
+        )
+        // 头部半径:双眼距的 2.1 倍,至少占图宽 16%
+        let radiusFraction = max(eyeDistance * 2.1, 0.16)
+
+        guard let crop = ImageUtil.featheredHeadCrop(
+            from: cgImage, normalizedCenter: eyeMid, radiusFraction: radiusFraction
+        ) else { return }
+
+        let scale = petRect.width / CGFloat(cgImage.width)
+        let frame = CGRect(
+            x: petRect.minX + crop.pixelRect.minX * scale,
+            y: petRect.minY + crop.pixelRect.minY * scale,
+            width: crop.pixelRect.width * scale,
+            height: crop.pixelRect.height * scale
+        )
+        head.contents = crop.image
+        head.frame = frame
+        // 支点放在头部下缘(颈部),转头绕颈转
+        head.anchorPoint = CGPoint(x: 0.5, y: 0.12)
+        head.position = CGPoint(x: frame.midX, y: frame.minY + frame.height * 0.12)
+        headCenterInView = CGPoint(x: frame.midX, y: frame.midY)
+        container.addSublayer(head)
     }
 
     private func startBreathing() {
@@ -97,28 +123,36 @@ public final class PetView: NSView {
 
     // MARK: - 动作渲染
 
+    /// 头跟着鼠标转:水平转头 + 垂直微抬/低头,身体轻微倾斜。
     public func updateGaze(towardScreenPoint point: CGPoint) {
-        guard let window else { return }
-        for eye in [leftEye, rightEye] {
-            let inWindow = convert(eye.position, to: nil)
-            let onScreen = window.convertPoint(toScreen: inWindow)
-            let offset = PetGeometry.pupilOffset(
-                eyeCenter: onScreen, target: point, maxOffset: eye.maxPupilOffset
-            )
-            eye.setPupilOffset(offset)
-        }
-        let centerInWindow = convert(CGPoint(x: petRect.midX, y: petRect.midY), to: nil)
-        let centerOnScreen = window.convertPoint(toScreen: centerInWindow)
-        let lean = PetGeometry.leanAngle(petCenterX: centerOnScreen.x, targetX: point.x)
+        guard let window, !isSleeping else { return }
+        let headOnScreen = window.convertPoint(
+            toScreen: convert(headCenterInView, to: nil)
+        )
+        let turn = PetGeometry.headTurnAngle(headCenterX: headOnScreen.x, targetX: point.x)
+        let lift = PetGeometry.headLift(headCenterY: headOnScreen.y, targetY: point.y)
+        let lean = PetGeometry.leanAngle(
+            petCenterX: headOnScreen.x, targetX: point.x, maxDegrees: 3
+        )
+
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.25)
+        CATransaction.setAnimationDuration(0.3)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        head.setAffineTransform(
+            CGAffineTransform(translationX: 0, y: lift).rotated(by: turn)
+        )
         container.setAffineTransform(CGAffineTransform(rotationAngle: lean))
         CATransaction.commit()
     }
 
+    /// 醒着时的小动作:轻轻点一下头(代替原来的眨眼)。
     public func performBlink() {
-        leftEye.blink()
-        rightEye.blink()
+        guard !isSleeping else { return }
+        let nod = CAKeyframeAnimation(keyPath: "transform.translation.y")
+        nod.values = [0, -3, 0]
+        nod.duration = 0.3
+        nod.isAdditive = true
+        head.add(nod, forKey: "nod")
     }
 
     public func performPaw(towardViewPoint point: CGPoint) {
@@ -149,13 +183,19 @@ public final class PetView: NSView {
         layer.position = CGPoint(x: foodX, y: petRect.minY + 16)
         CATransaction.commit()
 
-        // 2. 低头啃食(朝食物方向反复俯身)
+        // 2. 低头啃食:头朝食物方向反复俯身
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self else { return }
             let bob = CAKeyframeAnimation(keyPath: "transform.rotation.z")
-            bob.values = [0, -0.14, -0.02, -0.14, -0.02, -0.14, 0]
+            bob.values = [0, -0.3, -0.06, -0.3, -0.06, -0.3, 0]
             bob.duration = 1.5
-            self.container.add(bob, forKey: "eatBob")
+            bob.isAdditive = true
+            self.head.add(bob, forKey: "eatBob")
+            let bodyBob = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+            bodyBob.values = [0, -0.08, 0, -0.08, 0]
+            bodyBob.duration = 1.5
+            bodyBob.isAdditive = true
+            self.container.add(bodyBob, forKey: "eatBob")
         }
         // 3. 食物被吃掉,冒爱心
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.9) { [weak self] in
@@ -177,19 +217,28 @@ public final class PetView: NSView {
         let wiggle = CAKeyframeAnimation(keyPath: "transform.rotation.z")
         wiggle.values = [0, 0.09, -0.09, 0.07, -0.07, 0]
         wiggle.duration = 1.2
+        wiggle.isAdditive = true
         container.add(wiggle, forKey: "wiggle")
         PetLayerFactory.burst(hearts, duration: 0.9)
     }
 
+    /// 睡觉:头垂下来 + Zzz;醒来复位。
     public func setSleeping(_ sleeping: Bool) {
-        leftEye.setClosed(sleeping)
-        rightEye.setClosed(sleeping)
+        isSleeping = sleeping
         zzz.isHidden = !sleeping
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.5)
         if sleeping {
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0.4)
+            head.setAffineTransform(
+                CGAffineTransform(translationX: 0, y: -6).rotated(by: -0.16)
+            )
             container.setAffineTransform(.identity)
-            CATransaction.commit()
+        } else {
+            head.setAffineTransform(.identity)
+        }
+        CATransaction.commit()
+
+        if sleeping {
             let pulse = CABasicAnimation(keyPath: "opacity")
             pulse.fromValue = 0.25
             pulse.toValue = 1
@@ -199,6 +248,28 @@ public final class PetView: NSView {
             zzz.add(pulse, forKey: "pulse")
         } else {
             zzz.removeAllAnimations()
+        }
+    }
+
+    /// 步行循环:身体左右摇摆 + 上下颠簸,模拟迈步。
+    public func setWalking(_ walking: Bool) {
+        if walking {
+            let rock = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+            rock.values = [0, 0.045, 0, -0.045, 0]
+            rock.duration = 0.55
+            rock.repeatCount = .infinity
+            rock.isAdditive = true
+            container.add(rock, forKey: "walkRock")
+
+            let bob = CAKeyframeAnimation(keyPath: "position.y")
+            bob.values = [0, 5, 0, 5, 0]
+            bob.duration = 0.55
+            bob.repeatCount = .infinity
+            bob.isAdditive = true
+            container.add(bob, forKey: "walkBob")
+        } else {
+            container.removeAnimation(forKey: "walkRock")
+            container.removeAnimation(forKey: "walkBob")
         }
     }
 

@@ -47,4 +47,32 @@ public enum PetGeometry {
         let dy = target.y - anchor.y
         return (atan2(dy, dx), min(hypot(dx, dy), maxLength))
     }
+
+    /// 头部朝目标转动的角度(弧度):目标在左侧时头向左偏(逆时针,正角度)。
+    public static func headTurnAngle(
+        headCenterX: CGFloat, targetX: CGFloat, maxDegrees: CGFloat = 13
+    ) -> CGFloat {
+        let normalized = max(-1, min(1, (targetX - headCenterX) / 420))
+        return -normalized * maxDegrees * .pi / 180
+    }
+
+    /// 头部抬头/低头的纵向位移(pt):目标在上方时微微抬头。
+    public static func headLift(
+        headCenterY: CGFloat, targetY: CGFloat, maxLift: CGFloat = 7
+    ) -> CGFloat {
+        let normalized = max(-1, min(1, (targetY - headCenterY) / 420))
+        return normalized * maxLift
+    }
+
+    /// 朝目标走一步:返回新位置与是否到达(剩余距离 ≤ 步长视为到达)。
+    public static func stepToward(
+        origin: CGPoint, target: CGPoint, maxStep: CGFloat
+    ) -> (position: CGPoint, arrived: Bool) {
+        let dx = target.x - origin.x
+        let dy = target.y - origin.y
+        let distance = hypot(dx, dy)
+        guard distance > maxStep else { return (target, true) }
+        let scale = maxStep / distance
+        return (CGPoint(x: origin.x + dx * scale, y: origin.y + dy * scale), false)
+    }
 }

@@ -7,9 +7,20 @@ public final class PetWindowController: NSWindowController, PetActing {
     public var onPetting: (() -> Void)?
     public var onChangePet: (() -> Void)?
     public var onQuit: (() -> Void)?
+    /// 走到鼠标附近后通知行为引擎。
+    public var onWalkArrived: (() -> Void)?
 
     private let petView: PetView
     private let petName: String
+
+    /// 定时器逐帧移动窗口。不用 window.animator():它会把新旧窗口
+    /// 快照交叉淡化,产生"图片重叠"残影。
+    private var moveTimer: Timer?
+    private var moveTarget: CGPoint = .zero
+    private var moveSpeed: CGFloat = 0
+    private var moveArriveDistance: CGFloat = 0
+    private var onMoveArrived: (() -> Void)?
+    private static let moveTickInterval: TimeInterval = 1.0 / 60.0
 
     public init(profile: PetProfile, image: NSImage) {
         petView = PetView(profile: profile, image: image)
@@ -63,23 +74,9 @@ public final class PetWindowController: NSWindowController, PetActing {
 
     /// 整只宠物跳向鼠标位置(捕捉!),落地后拍一下 + 爱心。
     public func performPounce(towardScreenPoint point: CGPoint) {
-        guard let window else { return }
-        var target = NSPoint(
-            x: point.x - window.frame.width / 2,
-            y: point.y - window.frame.height * 0.25
-        )
-        if let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
-            target.x = max(visible.minX - 40, min(target.x, visible.maxX - window.frame.width + 40))
-            target.y = max(visible.minY - 10, min(target.y, visible.maxY - window.frame.height))
-        }
-        let frame = NSRect(origin: target, size: window.frame.size)
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.45
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            window.animator().setFrame(frame, display: true)
-        }, completionHandler: { [weak self] in
+        startMoving(toward: point, speed: 1100, arriveWithin: 10) { [weak self] in
             self?.petView.performPounceLanding()
-        })
+        }
     }
 
     public func performEat(_ food: FoodKind) { petView.performEat(food) }
@@ -87,6 +84,86 @@ public final class PetWindowController: NSWindowController, PetActing {
     public func performLove() { petView.performLove() }
 
     public func setSleeping(_ sleeping: Bool) { petView.setSleeping(sleeping) }
+
+    public func startWalk(towardScreenPoint point: CGPoint) {
+        petView.setWalking(true)
+        startMoving(toward: point, speed: 170, arriveWithin: 150) { [weak self] in
+            self?.petView.setWalking(false)
+            self?.onWalkArrived?()
+        }
+    }
+
+    public func updateWalkTarget(_ point: CGPoint) {
+        moveTarget = point
+    }
+
+    public func stopWalk() {
+        stopMoving()
+        petView.setWalking(false)
+    }
+
+    // MARK: - 窗口移动器
+
+    /// target 为期望的宠物中心点(屏幕坐标,左下原点)。
+    private func startMoving(
+        toward target: CGPoint, speed: CGFloat, arriveWithin: CGFloat,
+        onArrive: @escaping () -> Void
+    ) {
+        stopMoving()
+        moveTarget = target
+        moveSpeed = speed
+        moveArriveDistance = arriveWithin
+        onMoveArrived = onArrive
+        let timer = Timer(timeInterval: Self.moveTickInterval, repeats: true) { [weak self] _ in
+            self?.moveTick()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        moveTimer = timer
+    }
+
+    private func stopMoving() {
+        moveTimer?.invalidate()
+        moveTimer = nil
+        onMoveArrived = nil
+    }
+
+    private func moveTick() {
+        guard let window else {
+            stopMoving()
+            return
+        }
+        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        let distance = hypot(moveTarget.x - center.x, moveTarget.y - center.y)
+        if distance <= moveArriveDistance {
+            let arrived = onMoveArrived
+            stopMoving()
+            arrived?()
+            return
+        }
+        let step = PetGeometry.stepToward(
+            origin: center, target: moveTarget,
+            maxStep: moveSpeed * Self.moveTickInterval
+        )
+        var origin = CGPoint(
+            x: step.position.x - window.frame.width / 2,
+            y: step.position.y - window.frame.height / 2
+        )
+        if let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            origin.x = max(visible.minX - 40,
+                           min(origin.x, visible.maxX - window.frame.width + 40))
+            origin.y = max(visible.minY - 10,
+                           min(origin.y, visible.maxY - window.frame.height))
+        }
+        // 被屏幕边缘夹住走不动时视为到达,避免定时器空转
+        if abs(origin.x - window.frame.origin.x) < 0.1,
+           abs(origin.y - window.frame.origin.y) < 0.1 {
+            let arrived = onMoveArrived
+            stopMoving()
+            arrived?()
+            return
+        }
+        window.setFrameOrigin(origin)
+    }
 
     // MARK: - 右键菜单
 

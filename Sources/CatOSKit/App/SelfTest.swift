@@ -45,6 +45,62 @@ public enum SelfTest {
         }
     }
 
+    /// 离屏渲染当前存档宠物的各个姿态(转头/抬头/打盹),
+    /// 不依赖录屏权限,用于无头自测视觉效果。
+    public static func renderPoses(outputPath: String) -> Int32 {
+        guard let saved = PetStore().loadCurrent() else {
+            FileHandle.standardError.write(Data("没有已保存的宠物,先跑 --selftest --seed\n".utf8))
+            return 1
+        }
+        let outDir = URL(fileURLWithPath: outputPath, isDirectory: true)
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let view = PetView(profile: saved.profile, image: saved.image)
+        let window = NSWindow(
+            contentRect: CGRect(origin: CGPoint(x: 200, y: 200), size: view.frame.size),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = view  // 不 orderFront,纯离屏
+
+        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        let poses: [(String, () -> Void)] = [
+            ("pose_1_idle", {}),
+            ("pose_2_head_left", {
+                view.updateGaze(towardScreenPoint: CGPoint(x: center.x - 420, y: center.y))
+            }),
+            ("pose_3_head_right", {
+                view.updateGaze(towardScreenPoint: CGPoint(x: center.x + 420, y: center.y))
+            }),
+            ("pose_4_head_up", {
+                view.updateGaze(towardScreenPoint: CGPoint(x: center.x, y: center.y + 420))
+            }),
+            ("pose_5_sleeping", { view.setSleeping(true) }),
+        ]
+
+        for (name, apply) in poses {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            apply()
+            CATransaction.commit()
+
+            let scale: CGFloat = 2
+            let width = Int(view.bounds.width * scale)
+            let height = Int(view.bounds.height * scale)
+            guard let context = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { continue }
+            context.scaleBy(x: scale, y: scale)
+            view.layer?.render(in: context)
+            guard let rendered = context.makeImage() else { continue }
+            try? ImageUtil.writePNG(rendered, to: outDir.appendingPathComponent("\(name).png"))
+            print("rendered: \(name)")
+        }
+        return 0
+    }
+
     /// 棋盘格背景 + 抠图 + 眼睛圆圈标记,用于人工核对。
     private static func renderPreview(
         cutout: CGImage, leftEye: CGPoint, rightEye: CGPoint

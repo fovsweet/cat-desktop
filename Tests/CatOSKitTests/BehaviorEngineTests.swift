@@ -5,6 +5,7 @@ import XCTest
 private final class MockActor: PetActing {
     enum Action: Equatable {
         case gaze, blink, paw, pounce, eat(FoodKind), love, sleep(Bool)
+        case startWalk, walkTarget, stopWalk
     }
     var actions: [Action] = []
 
@@ -15,6 +16,9 @@ private final class MockActor: PetActing {
     func performEat(_ food: FoodKind) { actions.append(.eat(food)) }
     func performLove() { actions.append(.love) }
     func setSleeping(_ sleeping: Bool) { actions.append(.sleep(sleeping)) }
+    func startWalk(towardScreenPoint point: CGPoint) { actions.append(.startWalk) }
+    func updateWalkTarget(_ point: CGPoint) { actions.append(.walkTarget) }
+    func stopWalk() { actions.append(.stopWalk) }
 }
 
 final class BehaviorEngineTests: XCTestCase {
@@ -131,5 +135,67 @@ final class BehaviorEngineTests: XCTestCase {
         engine.handleClick(atViewPoint: .zero, screenPoint: .zero)
         engine.finishCurrentAction()
         XCTAssertEqual(engine.state, .idle)
+    }
+
+    // MARK: - 走动跟随
+
+    private func setPetAt(center: CGPoint, size: CGFloat = 100) {
+        engine.petFrameProvider = {
+            CGRect(x: center.x - size / 2, y: center.y - size / 2, width: size, height: size)
+        }
+    }
+
+    func testFarMouseStartsWalking() {
+        setPetAt(center: CGPoint(x: 50, y: 50))
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 800, y: 50))
+        XCTAssertEqual(engine.state, .walking)
+        XCTAssertEqual(actor.actions, [.startWalk, .gaze])
+    }
+
+    func testNearMouseOnlyWatches() {
+        setPetAt(center: CGPoint(x: 50, y: 50))
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 200, y: 50))
+        XCTAssertEqual(engine.state, .watching)
+        XCTAssertEqual(actor.actions, [.gaze])
+    }
+
+    func testWalkingUpdatesTargetWhileFar() {
+        setPetAt(center: CGPoint(x: 50, y: 50))
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 800, y: 50))
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 900, y: 100))
+        XCTAssertEqual(engine.state, .walking)
+        XCTAssertEqual(actor.actions, [.startWalk, .gaze, .walkTarget, .gaze])
+    }
+
+    func testWalkingStopsWhenMouseComesBack() {
+        setPetAt(center: CGPoint(x: 50, y: 50))
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 800, y: 50))
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 120, y: 50))
+        XCTAssertEqual(engine.state, .watching)
+        XCTAssertEqual(actor.actions, [.startWalk, .gaze, .stopWalk, .gaze])
+    }
+
+    func testWalkArrivedStopsWalking() {
+        setPetAt(center: CGPoint(x: 50, y: 50))
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 800, y: 50))
+        engine.walkArrived()
+        XCTAssertEqual(engine.state, .watching)
+        XCTAssertEqual(actor.actions, [.startWalk, .gaze, .stopWalk])
+    }
+
+    func testClickDuringWalkingStopsWalkAndPaws() {
+        setPetAt(center: CGPoint(x: 50, y: 50))
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 800, y: 50))
+        engine.handleClick(atViewPoint: .zero, screenPoint: .zero)
+        XCTAssertEqual(engine.state, .pawing)
+        XCTAssertEqual(actor.actions, [.startWalk, .gaze, .stopWalk, .paw])
+    }
+
+    func testMouseMoveCountsAsInteractionForSleep() {
+        advance(80)
+        engine.handleMouseMoved(toScreenPoint: CGPoint(x: 10, y: 10))
+        advance(80)
+        engine.tick()
+        XCTAssertEqual(engine.state, .watching, "持续动鼠标时不应入睡")
     }
 }

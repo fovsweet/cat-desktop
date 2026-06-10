@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreImage
 
 public enum ImageUtilError: Error {
     case pngEncodingFailed
@@ -53,6 +54,42 @@ public enum ImageUtil {
         return NSColor(
             red: r / count / 255, green: g / count / 255, blue: b / count / 255, alpha: 1
         )
+    }
+
+    /// 以归一化中心点为圆心,从抠图中羽化裁出头部圆形区域。
+    /// 边缘用径向渐变淡出,叠回身体上转动时看不出接缝。
+    /// 返回头部图层位图与其在源图中的像素范围(左下角原点)。
+    public static func featheredHeadCrop(
+        from image: CGImage, normalizedCenter: CGPoint, radiusFraction: CGFloat
+    ) -> (image: CGImage, pixelRect: CGRect)? {
+        let width = CGFloat(image.width)
+        let height = CGFloat(image.height)
+        let center = CGPoint(x: normalizedCenter.x * width, y: normalizedCenter.y * height)
+        let radius = max(radiusFraction * width, 24)
+
+        let source = CIImage(cgImage: image)
+        guard let gradientFilter = CIFilter(name: "CIRadialGradient") else { return nil }
+        gradientFilter.setValue(CIVector(x: center.x, y: center.y), forKey: "inputCenter")
+        gradientFilter.setValue(radius * 0.62, forKey: "inputRadius0")
+        gradientFilter.setValue(radius, forKey: "inputRadius1")
+        gradientFilter.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor0")
+        gradientFilter.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 0), forKey: "inputColor1")
+        guard let mask = gradientFilter.outputImage?.cropped(to: source.extent) else { return nil }
+
+        guard let blend = CIFilter(name: "CIBlendWithAlphaMask") else { return nil }
+        blend.setValue(source, forKey: kCIInputImageKey)
+        blend.setValue(CIImage.empty().cropped(to: source.extent), forKey: kCIInputBackgroundImageKey)
+        blend.setValue(mask, forKey: kCIInputMaskImageKey)
+        guard let output = blend.outputImage else { return nil }
+
+        let cropRect = CGRect(
+            x: center.x - radius, y: center.y - radius,
+            width: radius * 2, height: radius * 2
+        ).intersection(source.extent)
+        guard !cropRect.isEmpty,
+              let result = CIContext().createCGImage(output, from: cropRect)
+        else { return nil }
+        return (result, cropRect)
     }
 
     /// 把 emoji 渲染成位图,供 CALayer / CAEmitterCell 使用。
